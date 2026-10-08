@@ -39,6 +39,18 @@ export function rewrite(command: string): Promise<string | undefined> {
   })
 }
 
+// snip's quoting (`"snip.exe" run -- cmd`) is valid in POSIX shells; in
+// PowerShell a quoted string needs `&` to be invoked. When the shell is
+// PowerShell, prefix every wrapped segment with `&`.
+function psPrefix(command: string, isPS: boolean): string {
+  if (!isPS) return command
+  return command.replace(/("[^"]*"\s+)run\b/g, "& $1run")
+}
+
+function shellIsPS(shellName: unknown): boolean {
+  return typeof shellName === "string" && /powershell|pwsh/i.test(shellName)
+}
+
 export const SnipPlugin = {
   id: "opencode-snip",
   async setup(ctx: any) {
@@ -52,8 +64,10 @@ export const SnipPlugin = {
     await ctx.shell.hook("create.before", async (event: any) => {
       try {
         if (!event.command || typeof event.command !== "string") return
+        const isPS =
+          shellIsPS(event.shell) || (event.shell == null && process.platform === "win32")
         const rewritten = await rewrite(event.command)
-        if (rewritten) event.command = rewritten
+        if (rewritten) event.command = psPrefix(rewritten, isPS)
       } catch {
         /* fail-open */
       }
@@ -66,9 +80,11 @@ export const SnipPlugin = {
         const args = event.input
         if (!args || typeof args !== "object" || typeof args.command !== "string" || !args.command)
           return
+        // ponytail: on win32 PowerShell is assumed (OpenCode's default); with
+        // bash configured on Windows, drop the `&` prefixing
         const rewritten = await rewrite(args.command)
         if (rewritten) {
-          args.command = rewritten
+          args.command = psPrefix(rewritten, process.platform === "win32")
           event.input = args
         }
       } catch {

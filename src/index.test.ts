@@ -4,8 +4,6 @@ import { SnipPlugin, rewrite } from "./index"
 // Same probe as the plugin startup: an old snip without `hook` skips these tests.
 const hasSnipHook = (await rewrite("git status")) !== undefined
 
-const SNIP_RUN = /^"[^"]*snip(\.exe)?" run -- /
-
 // Captures the V2 hooks the plugin registers at setup.
 async function setupPlugin() {
   const hooks: Record<string, (event: any) => Promise<void>> = {}
@@ -67,7 +65,7 @@ describe("SnipPlugin (V2)", () => {
 
     it("should wrap a command snip has a filter for", async () => {
       const command = await runTool("bash", "git status")
-      expect(command).toMatch(SNIP_RUN)
+      expect(command).toMatch(/^(& )?"[^"]*snip(\.exe)?" run -- /)
       expect(command).toMatch(/ run -- git status$/)
     })
 
@@ -75,15 +73,21 @@ describe("SnipPlugin (V2)", () => {
       expect(await runShell("git status")).toMatch(/ run -- git status$/)
     })
 
+    it("should prefix & for PowerShell shells", async () => {
+      const event = { shell: "powershell.exe", command: "git status" }
+      await hooks["shell.create.before"](event)
+      expect(event.command).toMatch(/^& "[^"]*" run -- git status$/)
+    })
+
     it("should keep env var prefixes before snip", async () => {
       expect(await runTool("bash", "CGO_ENABLED=0 go test ./...")).toMatch(
-        /^CGO_ENABLED=0 "[^"]*" run -- go test \.\/\.\.\.$/,
+        /^CGO_ENABLED=0 (& )?"[^"]*" run -- go test \.\/\.\.\.$/,
       )
     })
 
     it("should wrap each segment of a compound command", async () => {
       expect(await runTool("bash", "git status && git log -5")).toMatch(
-        / run -- git status && "[^"]*" run -- git log -5$/,
+        / run -- git status && (& )?"[^"]*" run -- git log -5$/,
       )
     })
 
