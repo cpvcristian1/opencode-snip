@@ -78,7 +78,7 @@ export function shouldPrefixPS(shell: string | undefined, platform: string): boo
 // command boundaries (`;`, `&&`), so quoted arguments mid-segment never match.
 function psPrefix(command: string, isPS: boolean): string {
   if (!isPS) return command
-  return command.replace(/(^|(?:&&|[;&])\s*)("[^"]*"\s+run\b)/g, "$1& $2")
+  return command.replace(/(^|(?:&&|\|\||[;&])\s*)("[^"]*"\s+run\b)/g, "$1& $2")
 }
 
 export const SnipPlugin = {

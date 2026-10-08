@@ -25,7 +25,9 @@ vi.mock("node:fs", async (importOriginal) => {
 const hasSnipHook = (await rewrite("git status")) !== undefined
 
 const DIR = path.dirname(fileURLToPath(import.meta.url))
-const TEST_CONFIG = path.join(DIR, "..", ".opencode", "opencode.json")
+// Temp project dir: tests never create or delete files in the checkout.
+const TMP_PROJECT = fs.mkdtempSync(path.join(os.tmpdir(), "snip-proj-"))
+const TEST_CONFIG = path.join(TMP_PROJECT, ".opencode", "opencode.json")
 
 // Pin the configured shell for hook tests so they do not depend on the
 // developer's real OpenCode config (project config wins over global).
@@ -38,13 +40,13 @@ function pinShell(shell: string | undefined) {
   }
 }
 
-afterAll(() => pinShell(undefined))
+afterAll(() => fs.rmSync(TMP_PROJECT, { recursive: true, force: true }))
 
 // Captures the V2 hook the plugin registers at setup.
 async function setupPlugin() {
   const hooks: Record<string, (event: any) => Promise<void>> = {}
   const ctx = {
-    location: { directory: path.join(DIR, "..") },
+    location: { directory: TMP_PROJECT },
     tool: {
       hook: async (name: string, cb: (event: any) => Promise<void>) => {
         hooks[`tool.${name}`] = cb
@@ -125,6 +127,12 @@ describe("SnipPlugin (V2)", () => {
       pinShell("powershell.exe")
       const command = await runTool("bash", 'git log -- "README.md" run')
       expect(command).toMatch(/^& "[^"]*" run -- git log -- "README\.md" run$/)
+    })
+
+    it("should prefix & for every segment of a || chain in PowerShell", async () => {
+      pinShell("powershell.exe")
+      const command = await runTool("bash", "git status || git log -5")
+      expect(command).toMatch(/^& "[^"]*" run -- git status \|\| & "[^"]*" run -- git log -5$/)
     })
 
     it.each([
