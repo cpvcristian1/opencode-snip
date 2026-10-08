@@ -1,12 +1,31 @@
-import { execFile } from "node:child_process"
-import type { Hooks, Plugin } from "@opencode-ai/plugin"
-
+// Port to the OpenCode V2 plugin API. OpenCode V2 rejects V1 hook objects
+// ("Plugin must export a default definition with an id and a setup function"),
+// so this version registers the equivalent V2 hooks instead:
+//
+//   V1 tool.execute.before (bash) -> V2 ctx.shell.hook("create.before")
+//                                    + V2 ctx.tool.hook("execute.before") fallback
+//
 // Delegates to `snip hook` (Claude Code PreToolUse format) so the rewrite rules
 // stay in snip: only filtered commands are wrapped, pipes/redirects/heredocs and
 // command substitutions are left raw. Any failure leaves the command untouched.
+import { execFile } from "node:child_process"
+import { existsSync } from "node:fs"
+import { fileURLToPath } from "node:url"
+import * as path from "node:path"
+
+const DIR = path.dirname(fileURLToPath(import.meta.url))
+
+// Prefer a snip binary shipped next to the plugin (no PATH dependency),
+// then one at the package root, then plain `snip` from PATH.
+function snipBin(): string {
+  if (existsSync(path.join(DIR, "snip.exe"))) return path.join(DIR, "snip.exe")
+  if (existsSync(path.join(DIR, "..", "snip.exe"))) return path.join(DIR, "..", "snip.exe")
+  return "snip"
+}
+
 export function rewrite(command: string): Promise<string | undefined> {
   return new Promise((resolve) => {
-    const child = execFile("snip", ["hook"], { timeout: 2000 }, (error, stdout) => {
+    const child = execFile(snipBin(), ["hook"], { timeout: 2000 }, (error, stdout) => {
       if (error || !stdout.trim()) return resolve(undefined)
       try {
         const rewritten = JSON.parse(stdout).hookSpecificOutput?.updatedInput?.command
@@ -20,27 +39,45 @@ export function rewrite(command: string): Promise<string | undefined> {
   })
 }
 
-export const toolExecuteBefore: NonNullable<Hooks["tool.execute.before"]> = async (input, output) => {
-  if (input.tool !== "bash") return
+export const SnipPlugin = {
+  id: "opencode-snip",
+  async setup(ctx: any) {
+    // Same probe as V1: without a working `snip hook`, do nothing.
+    if (!(await rewrite("git status"))) {
+      console.warn("[snip] snip hook unavailable (missing or old binary) — plugin disabled")
+      return {}
+    }
 
-  const command = output.args.command
-  if (!command || typeof command !== "string") return
+    // V2 shell hook: rewrite the command before execution.
+    await ctx.shell.hook("create.before", async (event: any) => {
+      try {
+        if (!event.command || typeof event.command !== "string") return
+        const rewritten = await rewrite(event.command)
+        if (rewritten) event.command = rewritten
+      } catch {
+        /* fail-open */
+      }
+    })
 
-  const rewritten = await rewrite(command)
-  if (rewritten) output.args.command = rewritten
-}
+    // Fallback in case an execution goes through the tool without the shell hook.
+    await ctx.tool.hook("execute.before", async (event: any) => {
+      try {
+        if (event.tool !== "shell" && event.tool !== "bash") return
+        const args = event.input
+        if (!args || typeof args !== "object" || typeof args.command !== "string" || !args.command)
+          return
+        const rewritten = await rewrite(args.command)
+        if (rewritten) {
+          args.command = rewritten
+          event.input = args
+        }
+      } catch {
+        /* fail-open */
+      }
+    })
 
-export const SnipPlugin: Plugin = async () => {
-  // Probes `snip hook` rather than the binary alone: a snip without the hook
-  // subcommand would otherwise leave every command unfiltered silently.
-  if (!(await rewrite("git status"))) {
-    console.warn("[snip] snip hook unavailable (binary missing or too old) — plugin disabled")
     return {}
-  }
-
-  return {
-    "tool.execute.before": toolExecuteBefore,
-  }
+  },
 }
 
 export default SnipPlugin

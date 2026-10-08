@@ -1,49 +1,95 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { SnipPlugin, rewrite, toolExecuteBefore } from "./index"
+import { describe, it, expect, beforeEach, vi } from "vitest"
+import { SnipPlugin, rewrite } from "./index"
 
 // Same probe as the plugin startup: an old snip without `hook` skips these tests.
 const hasSnipHook = (await rewrite("git status")) !== undefined
 
 const SNIP_RUN = /^"[^"]*snip(\.exe)?" run -- /
 
-describe("toolExecuteBefore", () => {
-  let mockInput: { tool: string; sessionID: string; callID: string }
-  let mockOutput: { args: { command: string } }
-
-  beforeEach(() => {
-    mockInput = { tool: "bash", sessionID: "s", callID: "c" }
-    mockOutput = { args: { command: "" } }
-  })
-
-  async function run(command: string) {
-    mockOutput.args.command = command
-    await toolExecuteBefore(mockInput, mockOutput)
-    return mockOutput.args.command
+// Captures the V2 hooks the plugin registers at setup.
+async function setupPlugin() {
+  const hooks: Record<string, (event: any) => Promise<void>> = {}
+  const ctx = {
+    shell: {
+      hook: async (name: string, cb: (event: any) => Promise<void>) => {
+        hooks[`shell.${name}`] = cb
+      },
+    },
+    tool: {
+      hook: async (name: string, cb: (event: any) => Promise<void>) => {
+        hooks[`tool.${name}`] = cb
+      },
+    },
   }
+  const result = await SnipPlugin.setup(ctx)
+  return { hooks, result }
+}
 
-  it("should not modify non-bash tool calls", async () => {
-    mockInput.tool = "read"
-    expect(await run("git status")).toBe("git status")
+describe("SnipPlugin (V2)", () => {
+  describe("when snip is not reachable", () => {
+    it("should register no hooks and disable the plugin", async () => {
+      const origPath = process.env.PATH
+      process.env.PATH = ""
+      vi.spyOn(console, "warn").mockImplementation(() => {})
+      try {
+        const { hooks, result } = await setupPlugin()
+        expect(result).toEqual({})
+        expect(Object.keys(hooks)).toHaveLength(0)
+      } finally {
+        process.env.PATH = origPath
+        vi.restoreAllMocks()
+      }
+    })
   })
 
   describe.skipIf(!hasSnipHook)("with snip", () => {
+    let hooks: Record<string, (event: any) => Promise<void>>
+
+    beforeEach(async () => {
+      hooks = (await setupPlugin()).hooks
+    })
+
+    async function runTool(tool: string, command: string) {
+      const event = { tool, input: { command } }
+      await hooks["tool.execute.before"](event)
+      return event.input.command
+    }
+
+    async function runShell(command: string) {
+      const event = { command }
+      await hooks["shell.create.before"](event)
+      return event.command
+    }
+
+    it("should not modify non-shell tool calls", async () => {
+      expect(await runTool("read", "git status")).toBe("git status")
+    })
+
     it("should wrap a command snip has a filter for", async () => {
-      const command = await run("git status")
+      const command = await runTool("bash", "git status")
       expect(command).toMatch(SNIP_RUN)
       expect(command).toMatch(/ run -- git status$/)
     })
 
+    it("should wrap through the shell hook too", async () => {
+      expect(await runShell("git status")).toMatch(/ run -- git status$/)
+    })
+
     it("should keep env var prefixes before snip", async () => {
-      expect(await run("CGO_ENABLED=0 go test ./...")).toMatch(/^CGO_ENABLED=0 "[^"]*" run -- go test \.\/\.\.\.$/)
+      expect(await runTool("bash", "CGO_ENABLED=0 go test ./...")).toMatch(
+        /^CGO_ENABLED=0 "[^"]*" run -- go test \.\/\.\.\.$/,
+      )
     })
 
     it("should wrap each segment of a compound command", async () => {
-      expect(await run("git status && git log -5")).toMatch(/ run -- git status && "[^"]*" run -- git log -5$/)
+      expect(await runTool("bash", "git status && git log -5")).toMatch(
+        / run -- git status && "[^"]*" run -- git log -5$/,
+      )
     })
 
     it("should not double wrap an already wrapped command", async () => {
-      const wrapped = await run("git status")
-      expect(await run(wrapped)).toBe(wrapped)
+      const wrapped = await runTool("bash", "git status")
+      expect(await runTool("bash", wrapped)).toBe(wrapped)
     })
 
     it.each([
@@ -54,29 +100,7 @@ describe("toolExecuteBefore", () => {
       ["command substitution", "git log $(git rev-parse HEAD)"],
       ["heredoc", "cat <<EOF\ngit status\nEOF"],
     ])("should leave %s untouched", async (_, command) => {
-      expect(await run(command)).toBe(command)
-    })
-  })
-
-  describe("when snip is not reachable", () => {
-    const path = process.env.PATH
-
-    beforeEach(() => {
-      process.env.PATH = ""
-      vi.spyOn(console, "warn").mockImplementation(() => {})
-    })
-
-    afterEach(() => {
-      process.env.PATH = path
-      vi.restoreAllMocks()
-    })
-
-    it("should leave the command untouched", async () => {
-      expect(await run("git status")).toBe("git status")
-    })
-
-    it("should disable the plugin", async () => {
-      expect(await SnipPlugin({} as Parameters<typeof SnipPlugin>[0])).toEqual({})
+      expect(await runTool("bash", command)).toBe(command)
     })
   })
 })
