@@ -9,7 +9,7 @@ This fork ports the plugin to the **OpenCode V2 plugin API** — OpenCode V2 rej
 - `ctx.shell.hook("create.before")` — rewrites the command before execution (V2-sanctioned shell hook)
 - `ctx.tool.hook("execute.before")` — fallback covering `shell`/`bash` tool invocations
 
-Also supports a `snip.exe` shipped next to the plugin or at the package root (no PATH dependency). Every hook is fail-open: on any failure the command runs unchanged.
+Also supports a `snip.exe` shipped next to the plugin or at the package root (no PATH dependency). The PowerShell `&` prefix is decided from the OpenCode `shell` setting (project config first, then global), falling back to PowerShell on Windows. Every hook is fail-open: on any failure the command runs unchanged.
 
 Install (OpenCode V2):
 
